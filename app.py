@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse # 用來解碼網址
 
 # --- 1. 專業級頁面配置 ---
 st.set_page_config(page_title="Ultra AI Investment Terminal", layout="wide", page_icon="📈")
@@ -18,14 +17,8 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
-    a {
-        text-decoration: none;
-        color: #2962ff;
-        font-weight: bold;
-    }
-    a:hover {
-        text-decoration: underline;
-        color: #0039cb;
+    .st-emotion-cache-1y4p8pa {
+        padding-top: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -50,7 +43,7 @@ show_ma = st.sidebar.checkbox("SMA 均線 (20/60日)", value=True)
 indicator = st.sidebar.selectbox("主圖指標", ["無", "布林通道 (Bollinger)"])
 oscillator = st.sidebar.selectbox("副圖指標", ["成交量", "MACD (趨勢)", "RSI (強弱)"], index=1)
 
-# --- 3. 核心數據引擎 ---
+# --- 3. 核心數據引擎 (加入快取與錯誤處理) ---
 @st.cache_data(ttl=3600)
 def get_stock_data(symbol, period):
     try:
@@ -71,14 +64,12 @@ def get_normalized_data(tickers, period):
     """將多檔股票歸一化 (起點設為 0%) 進行比較"""
     data_dict = {}
     for t in tickers:
-        try:
-            df = yf.download(t, period=period)['Close']
-            if not df.empty:
-                if isinstance(df, pd.DataFrame): df = df.iloc[:, 0]
-                normalized = ((df - df.iloc[0]) / df.iloc[0]) * 100
-                data_dict[t] = normalized
-        except:
-            continue
+        df = yf.download(t, period=period)['Close']
+        if not df.empty:
+            if isinstance(df, pd.DataFrame): df = df.iloc[:, 0]
+            # (當前價格 - 初始價格) / 初始價格
+            normalized = ((df - df.iloc[0]) / df.iloc[0]) * 100
+            data_dict[t] = normalized
     return pd.DataFrame(data_dict)
 
 # 執行數據抓取
@@ -102,7 +93,7 @@ if main_df is not None and not main_df.empty:
     c2.metric("趨勢訊號", trend_signal, f"MA20: {ma20:.1f}")
     c3.metric("成交量", f"{main_df['Volume'].iloc[-1]:,.0f}")
     
-    # 計算波動率
+    # 計算波動率 (風險指標)
     volatility = main_df['Returns'].std() * (252 ** 0.5) * 100
     c4.metric("年化波動率 (風險)", f"{volatility:.1f}%", delta_color="off")
 
@@ -114,7 +105,7 @@ if main_df is not None and not main_df.empty:
         "📰 AI 情緒雷達"
     ])
 
-    # === Tab 1: 技術分析 ===
+    # === Tab 1: 技術分析 (Pro Charts) ===
     with tab1:
         # 1. K線主圖
         fig = go.Figure()
@@ -136,8 +127,9 @@ if main_df is not None and not main_df.empty:
         fig.update_layout(height=450, margin=dict(l=20, r=20, t=20, b=20), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # 2. 副圖 (MACD / RSI)
+        # 2. 副圖 (MACD / RSI / Volume)
         if oscillator == "MACD (趨勢)":
+            # 簡易 MACD 計算
             exp12 = main_df['Close'].ewm(span=12, adjust=False).mean()
             exp26 = main_df['Close'].ewm(span=26, adjust=False).mean()
             macd = exp12 - exp26
@@ -172,7 +164,7 @@ if main_df is not None and not main_df.empty:
             st.line_chart(comp_df)
             st.caption("註：起點設為 0%，高於 0 代表獲利，低於 0 代表虧損。")
 
-    # === Tab 2: 風險與基本面 ===
+    # === Tab 2: 風險與基本面 (Institutional Grade) ===
     with tab2:
         col_fund, col_risk = st.columns([1, 1])
         
@@ -181,6 +173,7 @@ if main_df is not None and not main_df.empty:
             try:
                 info = yf.Ticker(ticker).info
                 pe = info.get('trailingPE', 'N/A')
+                pb = info.get('priceToBook', 'N/A')
                 dy = info.get('dividendYield', 0)
                 
                 st.write(f"**公司**: {info.get('longName', ticker)}")
@@ -203,12 +196,14 @@ if main_df is not None and not main_df.empty:
             mdd = drawdown.min()
             
             st.metric("歷史最大回撤 (MDD)", f"{mdd*100:.2f}%", help="過去這段期間最慘會賠多少")
-            st.progress(int(100 + mdd*100))
+            st.progress(int(100 + mdd*100)) # 視覺化條
             st.caption("資產防禦力 (MDD愈接近0愈好)")
+            
+            # 繪製回撤圖
             st.area_chart(drawdown * 100)
-            st.caption("📉 歷史回撤路徑")
+            st.caption("📉 歷史回撤路徑 (Drawdown History)")
 
-    # === Tab 3: 財富模擬 ===
+    # === Tab 3: 財富模擬 (Interactive) ===
     with tab3:
         st.subheader("💰 複利引擎：預見你的未來")
         c_inv1, c_inv2, c_inv3 = st.columns(3)
@@ -222,88 +217,44 @@ if main_df is not None and not main_df.empty:
         profit = final_val - total_cost
         
         st.metric(f"{years} 年後預期資產", f"${final_val:,.0f}", f"淨利 +${profit:,.0f}")
+        
+        # 繪製成長曲線
         growth = [monthly_inv * (((1 + (rate/100)/12)**m - 1) / ((rate/100)/12)) for m in range(1, months+1)]
         st.area_chart(growth)
 
-    # === Tab 4: 新聞情緒 (含連結優化) ===
+    # === Tab 4: 新聞情緒 (NLP) ===
     with tab4:
-        st.subheader("📰 市場情緒掃描 (點擊標題閱讀)")
+        st.subheader("📰 市場情緒掃描")
         
-        # 定義抓取新聞函數 (含連結解析)
-        def get_news_with_links(symbol):
-            # 使用 Google News 搜尋
+        def get_news_sentiment(symbol):
             url = f"https://www.google.com/search?q={symbol}+stock+news&tbm=nws"
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-            
             try:
-                r = requests.get(url, headers=headers, timeout=5)
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
                 soup = BeautifulSoup(r.text, 'html.parser')
-                
-                news_items = []
-                # 針對 Google 搜尋結果結構進行解析
-                # 尋找所有帶有連結的標籤
-                for link in soup.find_all('a'):
-                    href = link.get('href')
-                    # 過濾掉非新聞連結 (Google 的跳轉連結通常包含 /url?q=)
-                    if href and "/url?q=" in href and "google.com" not in href:
-                        # 解析出真實網址
-                        actual_url = href.split('/url?q=')[1].split('&')[0]
-                        actual_url = urllib.parse.unquote(actual_url) # 解碼 URL
-                        
-                        # 嘗試抓取標題文字 (有些在 h3 內，有些在 div 內)
-                        title_tag = link.find('div', role='heading') or link.find('h3') or link.find('span')
-                        if title_tag:
-                            title = title_tag.get_text()
-                            if title and len(title) > 5: # 過濾太短的無效標題
-                                news_items.append({"title": title, "link": actual_url})
-                
-                # 去重 (依標題)
-                seen_titles = set()
-                unique_news = []
-                for item in news_items:
-                    if item['title'] not in seen_titles:
-                        unique_news.append(item)
-                        seen_titles.add(item['title'])
-                        
-                return unique_news[:8] # 回傳前 8 則
-            except Exception as e:
+                titles = [h.text for h in soup.find_all('h3')[:8]]
+                return titles
+            except:
                 return []
 
-        # 執行抓取
-        news_data = get_news_with_links(ticker)
-        
-        if news_data:
+        news = get_news_sentiment(ticker)
+        if news:
             score = 0
-            pos_words = ['漲', '高', '強', '升', 'bull', 'high', 'jump', 'growth', 'gain', '噴', '紅']
-            neg_words = ['跌', '低', '弱', '降', 'bear', 'low', 'drop', 'fall', 'cut', '崩', '綠']
+            # 簡單關鍵字權重
+            pos_words = ['漲', '高', '強', '升', 'bull', 'high', 'jump', 'growth', 'gain']
+            neg_words = ['跌', '低', '弱', '降', 'bear', 'low', 'drop', 'fall', 'cut']
             
-            # 計算情緒分數
-            for item in news_data:
-                t = item['title']
+            for t in news:
+                st.write(f"• {t}")
                 if any(w in t.lower() for w in pos_words): score += 1
                 if any(w in t.lower() for w in neg_words): score -= 1
             
-            col_sent, col_news = st.columns([1, 2])
-            
-            with col_sent:
-                st.write(f"**AI 情緒指數**: {score}")
-                if score > 0: 
-                    st.success("🔥 市場情緒：偏向樂觀")
-                    st.progress(min((score+5)*10, 100))
-                elif score < 0: 
-                    st.error("🧊 市場情緒：偏向保守")
-                    st.progress(max((score+5)*10, 0))
-                else: 
-                    st.warning("⚖️ 市場情緒：中立觀望")
-                    st.progress(50)
-            
-            with col_news:
-                for item in news_data:
-                    # 使用 Markdown 語法建立超連結 [標題](網址)
-                    st.markdown(f"🔗 [{item['title']}]({item['link']})")
-                    st.divider()
+            st.markdown("---")
+            st.write(f"**AI 情緒指數**: {score}")
+            if score > 0: st.success("🔥 市場情緒：偏向樂觀")
+            elif score < 0: st.error("🧊 市場情緒：偏向保守")
+            else: st.warning("⚖️ 市場情緒：中立觀望")
         else:
-            st.info("暫無即時新聞數據，可能是 Google 阻擋了爬蟲，請稍後再試。")
+            st.info("暫無即時新聞數據")
 
 else:
     st.error("⚠️ 查無數據，請確認代碼是否正確 (台股需加 .TW，美股直接輸入代碼)")
