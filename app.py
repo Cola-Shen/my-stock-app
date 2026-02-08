@@ -113,12 +113,29 @@ if not data.empty:
         if show_volume:
             st.bar_chart(data['Volume'])
 
-    # --- Tab 2: 歷史數據 ---
+    # --- Tab 2: 歷史數據與基本面 ---
     with tab2:
-        st.subheader("📋 最近 10 個交易日數據摘要")
+        st.subheader("📋 最近 10 個交易日數據")
         display_df = data[['Open', 'High', 'Low', 'Close', 'MA20']].tail(10).copy()
         display_df.index = display_df.index.strftime('%Y-%m-%d')
         st.dataframe(display_df.style.format("{:.2f}").highlight_max(axis=0, color='#90ee90'), use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("🏢 公司基本面摘要")
+        try:
+            info = yf.Ticker(ticker).info
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.write(f"**公司名稱:** {info.get('longName', 'N/A')}")
+                st.write(f"**產業:** {info.get('industry', 'N/A')}")
+            with c2:
+                st.write(f"**本益比 (P/E):** {info.get('trailingPE', 'N/A')}")
+                st.write(f"**股息殖利率:** {info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "股息殖利率: N/A")
+            with c3:
+                st.write(f"**市值:** ${info.get('marketCap', 0):,.0f}")
+                st.write(f"**52週高點:** {info.get('fiftyTwoWeekHigh', 'N/A')}")
+        except:
+            st.info("無法抓取詳細基本面數據，可能該代碼不支援 info 接口。")
 
     # --- Tab 3: 財富預測 ---
     with tab3:
